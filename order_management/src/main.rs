@@ -1,12 +1,12 @@
-use std::net::SocketAddr;
-use std::result::Result;
-use std::convert::Infallible;
-use std::str;
 use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, StatusCode, Server};
+use hyper::{Body, Method, Request, Response, Server, StatusCode};
 pub use mysql_async::prelude::*;
 pub use mysql_async::*;
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::result::Result;
+use std::str;
 use tokio::time::{sleep, Duration};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -68,24 +68,27 @@ async fn handle_request(req: Request<Body>, pool: Pool) -> Result<Response<Body>
         }
 
         (&Method::POST, "/create_order") => {
-            let rate_url = "http://127.0.0.1:8001/find_rate";
+            let client = dapr::Dapr::new(3503);
+            let v = client
+                .get_secret("local-store", "APP_URL:SALES_TAX_RATE_SERVICE")
+                .await?;
+            let rate_url = v["APP_URL:SALES_TAX_RATE_SERVICE"].as_str().unwrap();
 
             let mut conn = pool.get_conn().await.unwrap();
             let byte_stream = hyper::body::to_bytes(req).await?;
             let mut order: Order = serde_json::from_slice(&byte_stream).unwrap();
 
             let client = reqwest::Client::new();
-            let rate_resp = client.post(&*rate_url)
+            let rate_resp = client
+                .post(&*rate_url)
                 .body(order.shipping_zip.clone())
                 .send()
                 .await?;
 
             if rate_resp.status().is_success() {
-                let rate = rate_resp.text()
-                    .await?
-                    .parse::<f32>()?;
+                let rate = rate_resp.text().await?.parse::<f32>()?;
                 order.total = order.subtotal * (1.0 + rate) + order.shipping_cost;
-                
+
                 "INSERT INTO orders (product_id, quantity, subtotal, shipping_address, shipping_zip, shipping_cost, total) VALUES (:product_id, :quantity, :subtotal, :shipping_address, :shipping_zip, :shipping_cost, :total)"
                     .with(params! {
                         "product_id" => order.product_id,
@@ -115,8 +118,9 @@ async fn handle_request(req: Request<Body>, pool: Pool) -> Result<Response<Body>
 
             let orders = "SELECT * FROM orders"
                 .with(())
-                .map(&mut conn, |(order_id, product_id, quantity, subtotal, shipping_address, shipping_zip, shipping_cost, total)| {
-                    Order::new(
+                .map(
+                    &mut conn,
+                    |(
                         order_id,
                         product_id,
                         quantity,
@@ -125,8 +129,20 @@ async fn handle_request(req: Request<Body>, pool: Pool) -> Result<Response<Body>
                         shipping_zip,
                         shipping_cost,
                         total,
-                    )},
-                ).await?;
+                    )| {
+                        Order::new(
+                            order_id,
+                            product_id,
+                            quantity,
+                            subtotal,
+                            shipping_address,
+                            shipping_zip,
+                            shipping_cost,
+                            total,
+                        )
+                    },
+                )
+                .await?;
 
             drop(conn);
             Ok(response_build(serde_json::to_string(&orders)?.as_str()))
@@ -146,7 +162,10 @@ fn response_build(body: &str) -> Response<Body> {
     Response::builder()
         .header("Access-Control-Allow-Origin", "*")
         .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        .header("Access-Control-Allow-Headers", "api,Keep-Alive,User-Agent,Content-Type")
+        .header(
+            "Access-Control-Allow-Headers",
+            "api,Keep-Alive,User-Agent,Content-Type",
+        )
         .body(Body::from(body.to_owned()))
         .unwrap()
 }
@@ -156,7 +175,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("App started. Wait for Dapr sidecar to start ...");
     sleep(Duration::from_millis(1500)).await;
 
-    let opts = Opts::from_url("mysql://root:root@127.0.0.1:3306/mysql").unwrap();
+    let client = dapr::Dapr::new(3503);
+    let v = client.get_secret("local-store", "APP_URL:DATABASE").await?;
+    let db_url = v["APP_URL:DATABASE"].as_str().unwrap();
+
+    let opts = Opts::from_url(db_url).unwrap();
     let builder = OptsBuilder::from_opts(opts);
     // The connection pool will have a min of 5 and max of 10 connections.
     let constraints = PoolConstraints::new(5, 10).unwrap();

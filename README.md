@@ -2,6 +2,11 @@
 
 ## Prerequisite
 
+need to intall wasmedge 0.13.5 with plugin wasmedge rustls version 0.14 do not seam to work.
+```bash
+curl -sSf https://raw.githubusercontent.com/WasmEdge/WasmEdge/master/utils/install.sh | bash -s -- --plugins  wasmedge_rustls -v 0.13.5 
+```
+
 [Install and start the MySQL database](https://dev.mysql.com/doc/mysql-installation-excerpt/8.0/en/)
 
 Install and init Dapr CLI.
