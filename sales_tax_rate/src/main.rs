@@ -4,6 +4,8 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Request, Response, StatusCode, Server};
 use csv::Reader;
 use serde_json::Value;
+use serde_json::json; 
+use tokio::time::{sleep, Duration};
 
 /// This is our service handler. It receives a Request, routes on its
 /// path, and returns a Future of a Response.
@@ -15,27 +17,18 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, anyhow::Er
         ))),
 
         (&Method::POST, "/find_rate") => {
-            let mut rate = "".to_string();
-
             let byte_stream = hyper::body::to_bytes(req).await?;
             let json: Value = serde_json::from_slice(&byte_stream).unwrap(); 
             let zip = json["zip"].as_str().unwrap();
 
-            let rates_data: &[u8] = include_bytes!("rates_by_zipcode.csv");
-            let mut rdr = Reader::from_reader(rates_data);
-            for result in rdr.records() {
-                let record = result?;
-                // dbg!("{:?}", record.clone());
-                if  zip.eq(&record[0]) {
-                    rate = record[1].to_string();
-                    break;
+            let client = dapr::Dapr::new(3501); 
+            match client.get_state("statestore", zip).await? {
+                Value::String(rate) => {
+                    Ok(Response::new(Body::from(rate)))
+                }, 
+                _ => {
+                    Ok(Response::new(Body::from("Not Found"))) 
                 }
-            }
-
-            if rate.is_empty() {
-                Ok(Response::new(Body::from("")))
-            } else {
-                Ok(Response::new(Body::from(rate)))
             }
         }
 
@@ -58,10 +51,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }))
         }
     });
+
+    sleep(Duration::from_millis(1500)).await;
+
+    let client = dapr::Dapr::new(3501);
+    let rates_data: &[u8] = include_bytes!("rates_by_zipcode.csv");
+    let mut rdr = Reader::from_reader(rates_data);
+    for result in rdr.records() {
+        let record = result?;
+        let kvs = json!([{
+            "key": record[0], "value": record[1]
+        }]);
+        client.save_state("statestore", kvs).await?;
+    }
+ 
     let server = Server::bind(&addr).serve(make_svc);
     dbg!("Server started on port 8001");
     if let Err(e) = server.await {
         eprintln!("server error: {}", e);
     }
     Ok(())
-}
+} 
