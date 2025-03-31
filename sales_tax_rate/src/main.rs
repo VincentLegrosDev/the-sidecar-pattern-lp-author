@@ -15,9 +15,6 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, anyhow::Er
         ))),
 
         (&Method::POST, "/find_rate") => {
-            /*
-            let post_body = hyper::body::to_bytes(req.into_body()).await?;
-            */
             let mut rate = "".to_string();
 
             let byte_stream = hyper::body::to_bytes(req).await?;
@@ -36,11 +33,6 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, anyhow::Er
             }
 
             if rate.is_empty() {
-                /*
-                let mut not_found = Response::default();
-                *not_found.status_mut() = StatusCode::NOT_FOUND;
-                Ok(not_found)
-                */
                 Ok(Response::new(Body::from("")))
             } else {
                 Ok(Response::new(Body::from(rate)))
