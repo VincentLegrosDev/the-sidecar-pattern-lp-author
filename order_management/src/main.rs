@@ -3,6 +3,8 @@ use hyper::{Body, Method, Request, Response, Server, StatusCode};
 pub use mysql_async::prelude::*;
 pub use mysql_async::*;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use serde_json::Value::Number;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::result::Result;
@@ -69,27 +71,25 @@ async fn handle_request(req: Request<Body>, pool: Pool) -> Result<Response<Body>
 
         (&Method::POST, "/create_order") => {
             let client = dapr::Dapr::new(3503);
+            /*
             let v = client
                 .get_secret("local-store", "APP_URL:SALES_TAX_RATE_SERVICE")
                 .await?;
             let rate_url = v["APP_URL:SALES_TAX_RATE_SERVICE"].as_str().unwrap();
+            */
 
-            let mut conn = pool.get_conn().await.unwrap();
             let byte_stream = hyper::body::to_bytes(req).await?;
             let mut order: Order = serde_json::from_slice(&byte_stream).unwrap();
 
-            let client = reqwest::Client::new();
-            let rate_resp = client
-                .post(&*rate_url)
-                .body(order.shipping_zip.clone())
-                .send()
-                .await?;
+            let kvs = json!({ "zip": &order.shipping_zip });
 
-            if rate_resp.status().is_success() {
-                let rate = rate_resp.text().await?.parse::<f32>()?;
-                order.total = order.subtotal * (1.0 + rate) + order.shipping_cost;
+            match client.invoke_service("rate-service", "find_rate", kvs).await? {
+                Number(rate) => {
+                    let mut conn = pool.get_conn().await.unwrap();
+                    let rate = rate.as_f64().unwrap() as f32;
+                    order.total = order.subtotal * (1.0 + rate) + order.shipping_cost;
 
-                "INSERT INTO orders (product_id, quantity, subtotal, shipping_address, shipping_zip, shipping_cost, total) VALUES (:product_id, :quantity, :subtotal, :shipping_address, :shipping_zip, :shipping_cost, :total)"
+                    "INSERT INTO orders (product_id, quantity, subtotal, shipping_address, shipping_zip, shipping_cost, total) VALUES (:product_id, :quantity, :subtotal, :shipping_address, :shipping_zip, :shipping_cost, :total)"
                     .with(params! {
                         "product_id" => order.product_id,
                         "quantity" => order.quantity,
@@ -102,7 +102,27 @@ async fn handle_request(req: Request<Body>, pool: Pool) -> Result<Response<Body>
                     .ignore(&mut conn)
                     .await?;
 
-                drop(conn);
+                    drop(conn);
+                    Ok(response_build(&serde_json::to_string_pretty(&order)?))
+                },
+                _ => {
+                    Ok(response_build(&String::from("{\"status\":\"error\", \"message\":\"The zip code in the order does not have a corresponding sales tax rate.\"}")))
+                }
+            }
+
+            /*
+
+            let client = reqwest::Client::new();
+            let rate_resp = client
+                .post(&*rate_url)
+                .body(order.shipping_zip.clone())
+                .send()
+                .await?;
+
+            if rate_resp.status().is_success() {
+                let rate = rate_resp.text().await?.parse::<f32>()?;
+                order.total = order.subtotal * (1.0 + rate) + order.shipping_cost;
+
                 Ok(response_build(&serde_json::to_string_pretty(&order)?))
             } else {
                 if rate_resp.status() == StatusCode::NOT_FOUND {
@@ -111,6 +131,7 @@ async fn handle_request(req: Request<Body>, pool: Pool) -> Result<Response<Body>
                     Ok(response_build(&String::from("{\"status\":\"error\", \"message\":\"There is an unknown error from the sales tax rate lookup service.\"}")))
                 }
             }
+            */
         }
 
         (&Method::GET, "/orders") => {
